@@ -7,21 +7,39 @@ import { StatusCodes } from 'http-status-codes';
 export const getAllIssues = async (req: Request, res: Response) => {
   try {
     const { sort = 'newest', type, status } = req.query;
+    const requestedPage = req.query.page === undefined ? 1 : Number(req.query.page);
 
-    let query = 'SELECT * FROM issues WHERE 1=1';
+    if (!Number.isInteger(requestedPage) || requestedPage < 1) {
+      return res.status(StatusCodes.BAD_REQUEST).json({
+        success: false,
+        message: 'Page must be a positive integer',
+      });
+    }
+
+    let whereClause = ' WHERE 1=1';
     const params: (string | number)[] = [];
 
     // Filter by type
     if (type) {
-      query += ' AND type = $' + (params.length + 1);
+      whereClause += ' AND type = $' + (params.length + 1);
       params.push(type as string);
     }
 
     // Filter by status
     if (status) {
-      query += ' AND status = $' + (params.length + 1);
+      whereClause += ' AND status = $' + (params.length + 1);
       params.push(status as string);
     }
+
+    const countResult = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM issues${whereClause}`,
+      params
+    );
+    const totalItems = Number(countResult.rows[0].total);
+    const pageSize = 6;
+    const totalPages = Math.ceil(totalItems / pageSize);
+    const page = totalPages === 0 ? 1 : Math.min(requestedPage, totalPages);
+    let query = `SELECT * FROM issues${whereClause}`;
 
     // Sorting
     if (sort === 'oldest') {
@@ -30,7 +48,8 @@ export const getAllIssues = async (req: Request, res: Response) => {
       query += ' ORDER BY created_at DESC';
     }
 
-    const result = await pool.query(query, params);
+    query += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    const result = await pool.query(query, [...params, pageSize, (page - 1) * pageSize]);
     const issues = result.rows;
 
     // Fetch reporter details for each issue
@@ -54,6 +73,12 @@ export const getAllIssues = async (req: Request, res: Response) => {
         const { reporter_id, ...issueData } = issue;
         return issueData;
       }),
+      pagination: {
+        page,
+        pageSize,
+        totalItems,
+        totalPages,
+      },
     });
   } catch (error) {
     console.error('Get issues error:', error);
